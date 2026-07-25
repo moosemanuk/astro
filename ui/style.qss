@@ -1,0 +1,68 @@
+QMainWindow, QWidget {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    font-family: Segoe UI, Arial, sans-serif;
+    font-size: 11pt;
+}
+
+/* Menu Bar & Menus */
+QMenuBar {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border-bottom: 1px solid #2d2d2d;
+}
+QMenuBar::item:selected {
+    background-color: #333333;
+}
+QMenu {
+    background-color: #252526;
+    color: #e0e0e0;
+    border: 1px solid #3c3c3c;
+}
+QMenu::item:selected {
+    background-color: #04395e;
+}
+
+/* Splitter bar handle */
+QSplitter::handle {
+    background-color: #3c3c3c;
+    border-left: 1px solid #2a2a2a;
+    border-right: 1px solid #2a2a2a;
+    width: 6px;
+}
+
+QSplitter::handle:hover {
+    background-color: #007acc;
+}
+
+QSplitter::handle:pressed {
+    background-color: #0098ff;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #2d2d2d;
+    color: #ffffff;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    padding: 5px 12px;
+}
+QPushButton:hover {
+    background-color: #3e3e42;
+    border: 1px solid #007acc;
+}
+QPushButton:pressed {
+    background-color: #007acc;
+}
+QPushButton:disabled {
+    background-color: #1a1a1a;
+    color: #555555;
+    border: 1px solid #2a2a2a;
+}
+
+/* Status Bar */
+QStatusBar {
+    background-color: #1e1e1e;
+    color: #888888;
+    border-top: 1px solid #2d2d2d;
+}

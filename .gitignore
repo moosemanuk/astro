@@ -1,0 +1,29 @@
+# Python temporary & bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+astro_env/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# VS Code settings
+.vscode/
+
+# Large model binaries and dataset output files
+*.onnx
+*.mat
+*.fits
+*.fit
+*.tif
+*.tiff
+*.dll
+
+# Executables (if compiling C code)
+*.exe
+*.o
+*.obj
