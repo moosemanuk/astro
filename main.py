@@ -355,25 +355,90 @@ class AstroImageEditor(QMainWindow):
         self.setWindowTitle("Astro Image Editor")
         self.statusBar().showMessage("Image closed.", 4000)
 
-    def update_display(self, autoRange=False):
+    def update_display(self, autoRange=False, disable_stf=False):
         """Helper to refresh viewport based on current image data & stretch preview state."""
         if self.current_image_data is None:
             return
 
+        # 1. Reset autostretch state when applying permanent stretch
+        if disable_stf:
+            self.is_autostretched = False
+            self.autostretched_cache = None
+
+        # 2. Render path
         if self.is_autostretched:
             if self.autostretched_cache is None:
                 self.autostretched_cache = auto_midtone_stretch(
                     self.current_image_data,
                     target_background=AUTO_STRETCH_TARGET_BACKGROUND,
                 )
-            self.image_view.setImage(self.autostretched_cache, autoRange=bool(autoRange), levels=(0, 1))
+            # DEBUG
+            print(
+                f"[MAIN DEBUG] display_data -> dtype:"
+                f" {self.current_image_data.dtype}, min:"
+                f" {self.current_image_data.min():.5f}, max:"
+                f" {self.current_image_data.max():.5f}, median:"
+                f" {np.median(self.current_image_data):.5f}"
+)
+            self.image_view.setImage(
+                self.autostretched_cache,
+                autoRange=bool(autoRange),
+                autoLevels=False,
+                levels=(0, 1),
+            )
         else:
-            max_val = np.max(self.current_image_data)
-            if max_val <= 1.0:
-                self.image_view.setImage(self.current_image_data, autoRange=bool(autoRange), levels=(0, 1))
-            else:
-                self.image_view.setImage(self.current_image_data, autoRange=bool(autoRange), autoLevels=True)
+            # If STF was explicitly disabled, FORCE fixed levels (0, 1) and bypass autoLevels
+            if disable_stf:
+                # Ensure float32 array is clipped to valid [0.0, 1.0] range
+                data_to_show = np.clip(self.current_image_data, 0.0, 1.0)
 
+                # DEBUG
+                print(
+                    f"[MAIN DEBUG] display_data -> dtype:"
+                    f" {self.current_image_data.dtype}, min:"
+                    f" {self.current_image_data.min():.5f}, max:"
+                    f" {self.current_image_data.max():.5f}, median:"
+                    f" {np.median(self.current_image_data):.5f}"
+                )
+                self.image_view.setImage(
+                    data_to_show,
+                    autoRange=bool(autoRange),
+                    autoLevels=False,
+                    levels=(0, 1),
+                )
+            else:
+                # Fallback range check for normal viewing
+                max_val = np.max(self.current_image_data)
+                if max_val <= 1.0:
+                    # DEBUG
+                    print(
+                        f"[MAIN DEBUG] display_data -> dtype:"
+                        f" {self.current_image_data.dtype}, min:"
+                        f" {self.current_image_data.min():.5f}, max:"
+                        f" {self.current_image_data.max():.5f}, median:"
+                        f" {np.median(self.current_image_data):.5f}"
+                    )
+                    self.image_view.setImage(
+                        self.current_image_data,
+                        autoRange=bool(autoRange),
+                        autoLevels=False,
+                        levels=(0, 1),
+                    )
+                else:
+                    # DEBUG
+                    print(
+                        f"[MAIN DEBUG] display_data -> dtype:"
+                        f" {self.current_image_data.dtype}, min:"
+                        f" {self.current_image_data.min():.5f}, max:"
+                        f" {self.current_image_data.max():.5f}, median:"
+                        f" {np.median(self.current_image_data):.5f}"
+                    )
+                    self.image_view.setImage(
+                        self.current_image_data,
+                        autoRange=bool(autoRange),
+                        autoLevels=True,                       
+                    )
+        self.image_view.getImageItem().setLevels([0.0, 1.0])
     # --- STRETCH OPERATIONS ---
 
     def toggle_autostretch(self, checked: bool):
@@ -713,18 +778,19 @@ class AstroImageEditor(QMainWindow):
     def open_stretch_workbench(self):
         if self.current_image_data is None:
             return
+
         backup_data = self.current_image_data.copy()
         dialog = StretchWorkbenchDialog(self.current_image_data, parent=self)
+
         if dialog.exec() == StretchWorkbenchDialog.DialogCode.Accepted:
+            # Data and display are already updated by dialog.accept()
             self.previous_image_data = backup_data
-            self.autostretched_cache = None
-            self.update_display(autoRange=False)
-            self.header_panel.update_histogram_only(self.current_image_data)
             self.undo_action.setEnabled(True)
             self.undo_btn.setEnabled(True)
-            self.statusBar().showMessage("Applied stretch workbench result. Press Ctrl+Z to undo.", 5000)
-
-    # --- UNDO & HELP ---
+            self.statusBar().showMessage(
+                "Applied stretch workbench result. Press Ctrl+Z to undo.", 5000
+            )
+        # --- UNDO & HELP ---
 
     def undo_last_operation(self):
         if self.previous_image_data is None:

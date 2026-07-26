@@ -199,10 +199,23 @@ class StretchWorkbenchDialog(QDialog):
     def _create_preview_subsample(self, img: np.ndarray, max_dim: int = 1024) -> np.ndarray:
         h, w = img.shape[:2]
         max_side = max(h, w)
-        if max_side <= max_dim:
-            return img.copy()
-        step = int(np.ceil(max_side / max_dim))
-        return img[::step, ::step].copy()
+        
+        # Subsample if large
+        if max_side > max_dim:
+            step = int(np.ceil(max_side / max_dim))
+            img = img[::step, ::step].copy()
+        else:
+            img = img.copy()
+
+        # Convert to float32 and normalize safely to [0.0, 1.0]
+        img = img.astype(np.float32)
+        d_min, d_max = float(np.min(img)), float(np.max(img))
+        if d_max > d_min:
+            img = (img - d_min) / (d_max - d_min)
+        else:
+            img = np.zeros_like(img)
+
+        return img
 
     def _clear_param_layout(self):
         while self.param_layout.count():
@@ -232,7 +245,7 @@ class StretchWorkbenchDialog(QDialog):
 
         if index == 0:  # GHS
             self.sp_ghs_b = self._add_double_spin_control("Stretch Factor:", 0.15, 0.0, 1.0, 0.01, 3)
-            self.sp_ghs_x0 = self._add_double_spin_control("Symmetry Point:", 0.05, 0.0, 1.0, 0.01, 3)
+            self.sp_ghs_x0 = self._add_double_spin_control("Symmetry Point:", 0.0015, 0.0001, 0.0500, 0.0005, 4)
 
         elif index == 1:  # Arcsinh
             self.sp_asinh_s = self._add_double_spin_control("Stretch Factor:", 0.25, 0.0, 1.0, 0.01, 3)
@@ -277,12 +290,22 @@ class StretchWorkbenchDialog(QDialog):
 
     def _update_preview_display(self, img_data: np.ndarray):
         oriented = np.swapaxes(img_data, 0, 1)
+
+        # 1. Guarantee array is float32 normalized [0.0, 1.0]
+        d_min, d_max = img_data.min(), img_data.max()
+        if d_max > 1.0 or d_min < 0.0:
+            if d_max > d_min:
+                oriented = (oriented - d_min) / (d_max - d_min)
+
+        # 2. Force autoLevels or set fixed bounds [0.0, 1.0]
         first_render = not self._preview_initialized
         self.preview_view.setImage(
             oriented,
             autoRange=first_render,
-            autoLevels=first_render
+            autoLevels=True,       # Let pyqtgraph map min/max black-to-white
+            levels=[0.0, 1.0]      # Enforce standard normalized display window
         )
+        
         if first_render:
             self._preview_initialized = True
 
@@ -310,8 +333,27 @@ class StretchWorkbenchDialog(QDialog):
 
     def accept(self):
         if self.parent_app and hasattr(self.parent_app, "current_image_data"):
+            # Calculate final high-res result
             final_full_image = self._apply_algorithm(self.current_stacked_image)
+
+            # DEBUG
+            print(
+                f"[DIALOG DEBUG] final_full_image -> dtype: {final_full_image.dtype}, min:"
+                f" {final_full_image.min():.5f}, max: {final_full_image.max():.5f},"
+                f" median: {np.median(final_full_image):.5f}"
+            )
+
+            # Update parent data
             self.parent_app.current_image_data = final_full_image
             self.parent_app.autostretched_cache = None
-            self.parent_app.update_display(autoRange=False)
+
+            # Turn OFF auto-stretch mode on main window since data is now non-linear
+            if hasattr(self.parent_app, "is_autostretch_active"):
+                self.parent_app.is_autostretch_active = False
+            if hasattr(self.parent_app, "btn_autostretch"):
+                self.parent_app.btn_autostretch.setChecked(False)
+
+            # Update display with explicit STF bypass
+            self.parent_app.update_display(autoRange=False, disable_stf=True)
+
         super().accept()

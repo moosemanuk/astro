@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from ui.histogram_widget import HistogramWidget
 
 
 class ImageHeaderPanel(QWidget):
@@ -44,10 +43,14 @@ class ImageHeaderPanel(QWidget):
         layout_file.setSpacing(6)
 
         self.lbl_target = QLabel("—")
+        self.lbl_ra = QLabel("—")
+        self.lbl_dec = QLabel("—")
         self.lbl_date_obs = QLabel("—")
         self.lbl_exposure = QLabel("—")
 
         layout_file.addRow("Object:", self.lbl_target)
+        layout_file.addRow("RA:", self.lbl_ra)
+        layout_file.addRow("Dec:", self.lbl_dec)
         layout_file.addRow("Date (UTC):", self.lbl_date_obs)
         layout_file.addRow("Exposure:", self.lbl_exposure)
         container_layout.addWidget(grp_file)
@@ -92,25 +95,16 @@ class ImageHeaderPanel(QWidget):
         layout_frame.addRow("HFR / FWHM:", self.lbl_fwhm_hfr)
         container_layout.addWidget(grp_frame)
 
-        # -------------------------------------------------------------------------
-        # Card 4: Image Histogram
-        # -------------------------------------------------------------------------
-        grp_hist = QGroupBox("Histogram")
-        layout_hist = QVBoxLayout(grp_hist)
-        layout_hist.setContentsMargins(6, 12, 6, 6)
-
-        self.hist_widget = HistogramWidget()
-        layout_hist.addWidget(self.hist_widget)
-
         # Add all cards to container layout
         container_layout.addWidget(grp_file)
         container_layout.addWidget(grp_cam)
         container_layout.addWidget(grp_frame)
-        container_layout.addWidget(grp_hist)
 
         # Apply standard styling and selection properties to all labels
         all_labels = [
             self.lbl_target,
+            self.lbl_ra,
+            self.lbl_dec,
             self.lbl_date_obs,
             self.lbl_exposure,
             self.lbl_camera,
@@ -133,9 +127,11 @@ class ImageHeaderPanel(QWidget):
         main_layout.addWidget(scroll)
 
     def clear(self):
-        """Resets all header labels to default states and clears the histogram plot."""
+        """Resets all header labels to default states."""
         all_labels = [
             self.lbl_target,
+            self.lbl_ra,
+            self.lbl_dec,
             self.lbl_date_obs,
             self.lbl_exposure,
             self.lbl_camera,
@@ -152,11 +148,6 @@ class ImageHeaderPanel(QWidget):
         for lbl in all_labels:
             lbl.setText("—")
 
-        if hasattr(self.hist_widget, "clear"):
-            self.hist_widget.clear()
-        elif hasattr(self.hist_widget, "update_histogram"):
-            self.hist_widget.update_histogram(None)
-
     def _get_fits_val(self, header, keys, default="N/A"):
         """Safely searches a list of possible FITS header keys."""
         if not header:
@@ -165,11 +156,6 @@ class ImageHeaderPanel(QWidget):
             if k in header and header[k] not in [None, ""]:
                 return header[k]
         return default
-
-    def update_histogram_only(self, data):
-        """Updates only the histogram without changing other metadata."""
-        if data is not None:
-            self.hist_widget.update_histogram(data)
 
     def update_header_info(self, file_path, data, fits_header=None):
         """Populates side panel cards with detailed metadata from FITS header."""
@@ -184,6 +170,8 @@ class ImageHeaderPanel(QWidget):
             # Clear fields if no header exists
             for lbl in [
                 self.lbl_target,
+                self.lbl_ra,
+                self.lbl_dec,
                 self.lbl_date_obs,
                 self.lbl_exposure,
                 self.lbl_camera,
@@ -199,14 +187,18 @@ class ImageHeaderPanel(QWidget):
                 lbl.setText("N/A")
             return
 
-        # 2. Target & Timing
+        # 2. Target & Timing & Coordinates
         target = self._get_fits_val(fits_header, ["OBJECT", "TARGET"])
+        ra = self._get_fits_val(fits_header, ["OBJCTRA", "RA", "CRVAL1"])
+        dec = self._get_fits_val(fits_header, ["OBJCTDEC", "DEC", "CRVAL2"])
         date_obs = self._get_fits_val(fits_header, ["DATE-OBS", "DATE"])
         exp_time = self._get_fits_val(fits_header, ["EXPOSURE", "EXPTIME"])
         if isinstance(exp_time, (int, float)):
             exp_time = f"{exp_time:.2f} s"
 
         self.lbl_target.setText(str(target))
+        self.lbl_ra.setText(str(ra))
+        self.lbl_dec.setText(str(dec))
         self.lbl_date_obs.setText(str(date_obs))
         self.lbl_exposure.setText(str(exp_time))
 
@@ -251,6 +243,3 @@ class ImageHeaderPanel(QWidget):
         self.lbl_frame_type.setText(str(frame_type))
         self.lbl_pixel_size.setText(str(pix_size))
         self.lbl_fwhm_hfr.setText(str(hfr))
-
-        # 5. Update Histogram
-        self.update_histogram_only(data)
