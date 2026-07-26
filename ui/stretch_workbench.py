@@ -66,7 +66,6 @@ class StretchWorkbenchDialog(QDialog):
         }
     """
 
-    # Educational info snippets for each stretch
     ALGO_DESCRIPTIONS = {
         0: "<b>GHS (Generalised Hyperbolic Stretch):</b> Ideal for targeted stretching. Highly effective at opening up subtle background nebulosity while preventing bright star cores from blowing out.",
         1: "<b>Arcsinh Stretch:</b> Preserves color saturation during aggressive midtone stretching. Best used on star clusters, galaxies, and rich star fields where star colors tend to wash out.",
@@ -143,8 +142,14 @@ class StretchWorkbenchDialog(QDialog):
         self.param_layout.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         main_layout.addWidget(self.param_container)
 
+        # Manual execution button for running dynamic changes
+        self.btn_apply_preview = QPushButton("Apply Stretch Parameters")
+        self.btn_apply_preview.setStyleSheet("background-color: #1f4e79; color: white;")
+        self.btn_apply_preview.clicked.connect(self._recalculate_preview)
+        main_layout.addWidget(self.btn_apply_preview)
+
         # 4. LIVE PREVIEW WINDOW
-        preview_header = QLabel("<b>Live Preview:</b>")
+        preview_header = QLabel("<b>Preview:</b>")
         main_layout.addWidget(preview_header)
 
         self.preview_view = pg.ImageView()
@@ -189,6 +194,7 @@ class StretchWorkbenchDialog(QDialog):
 
         self.stack_history = []
         self._on_algorithm_changed(0)
+        self._update_preview_display(self.preview_base)
 
     def _create_preview_subsample(self, img: np.ndarray, max_dim: int = 1024) -> np.ndarray:
         h, w = img.shape[:2]
@@ -211,7 +217,7 @@ class StretchWorkbenchDialog(QDialog):
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
         spin.setValue(val)
-        spin.valueChanged.connect(self._recalculate_preview)
+        # Note: valueChanged signal connection removed to require manual apply click
         
         lbl = QLabel(name)
         self.param_layout.addRow(lbl, spin)
@@ -245,7 +251,8 @@ class StretchWorkbenchDialog(QDialog):
         elif index == 5:  # Exponential
             self.sp_exp_b = self._add_double_spin_control("Exponent Slope:", 0.15, 0.0, 1.0, 0.01, 3)
 
-        self._recalculate_preview()
+        # Show initial un-stretched baseline image without calling stretch execution
+        self._update_preview_display(self.preview_base)
 
     def _apply_algorithm(self, data: np.ndarray) -> np.ndarray:
         idx = self.combo_algo.currentIndex()
@@ -266,8 +273,10 @@ class StretchWorkbenchDialog(QDialog):
 
     def _recalculate_preview(self):
         self.preview_active = self._apply_algorithm(self.preview_base)
-        oriented = np.swapaxes(self.preview_active, 0, 1)
+        self._update_preview_display(self.preview_active)
 
+    def _update_preview_display(self, img_data: np.ndarray):
+        oriented = np.swapaxes(img_data, 0, 1)
         first_render = not self._preview_initialized
         self.preview_view.setImage(
             oriented,
@@ -283,21 +292,21 @@ class StretchWorkbenchDialog(QDialog):
 
         self.preview_base = self._create_preview_subsample(self.current_stacked_image, max_dim=1024)
         self.lbl_info.setText(f"<b>Stack Count:</b> {len(self.stack_history)} Stretches Applied")
-        self._recalculate_preview()
+        self._update_preview_display(self.preview_base)
 
     def _undo_last_stack(self):
         if self.stack_history:
             self.current_stacked_image = self.stack_history.pop()
             self.preview_base = self._create_preview_subsample(self.current_stacked_image, max_dim=1024)
             self.lbl_info.setText(f"<b>Stack Count:</b> {len(self.stack_history)} Stretches Applied")
-            self._recalculate_preview()
+            self._update_preview_display(self.preview_base)
 
     def _reset_all_stretches(self):
         self.stack_history.clear()
         self.current_stacked_image = self.original_image.copy()
         self.preview_base = self._create_preview_subsample(self.current_stacked_image, max_dim=1024)
         self.lbl_info.setText("<b>Stack Count:</b> 0 Stretches Applied")
-        self._recalculate_preview()
+        self._update_preview_display(self.preview_base)
 
     def accept(self):
         if self.parent_app and hasattr(self.parent_app, "current_image_data"):
