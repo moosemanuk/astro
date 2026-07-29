@@ -32,7 +32,7 @@ from ui.star_removal_dialog import StarRemovalDialog
 
 # AutoStretch is a display-only preview. Robust normalization in the stretch
 # keeps saturated stars from hiding faint nebula structure.
-AUTO_STRETCH_TARGET_BACKGROUND = 0.25
+AUTO_STRETCH_TARGET_BACKGROUND = 0.20
 
 
 class AstroImageEditor(QMainWindow):
@@ -372,73 +372,38 @@ class AstroImageEditor(QMainWindow):
                     self.current_image_data,
                     target_background=AUTO_STRETCH_TARGET_BACKGROUND,
                 )
-            # DEBUG
-            print(
-                f"[MAIN DEBUG] display_data -> dtype:"
-                f" {self.current_image_data.dtype}, min:"
-                f" {self.current_image_data.min():.5f}, max:"
-                f" {self.current_image_data.max():.5f}, median:"
-                f" {np.median(self.current_image_data):.5f}"
-)
             self.image_view.setImage(
                 self.autostretched_cache,
                 autoRange=bool(autoRange),
                 autoLevels=False,
-                levels=(0, 1),
+                levels=(0.0, 1.0),
             )
         else:
-            # If STF was explicitly disabled, FORCE fixed levels (0, 1) and bypass autoLevels
             if disable_stf:
-                # Ensure float32 array is clipped to valid [0.0, 1.0] range
+                # Permanent non-linear stretch output is already normalized in [0.0, 1.0]
                 data_to_show = np.clip(self.current_image_data, 0.0, 1.0)
-
-                # DEBUG
-                print(
-                    f"[MAIN DEBUG] display_data -> dtype:"
-                    f" {self.current_image_data.dtype}, min:"
-                    f" {self.current_image_data.min():.5f}, max:"
-                    f" {self.current_image_data.max():.5f}, median:"
-                    f" {np.median(self.current_image_data):.5f}"
-                )
                 self.image_view.setImage(
                     data_to_show,
                     autoRange=bool(autoRange),
                     autoLevels=False,
-                    levels=(0, 1),
+                    levels=(0.0, 1.0),
                 )
             else:
-                # Fallback range check for normal viewing
-                max_val = np.max(self.current_image_data)
-                if max_val <= 1.0:
-                    # DEBUG
-                    print(
-                        f"[MAIN DEBUG] display_data -> dtype:"
-                        f" {self.current_image_data.dtype}, min:"
-                        f" {self.current_image_data.min():.5f}, max:"
-                        f" {self.current_image_data.max():.5f}, median:"
-                        f" {np.median(self.current_image_data):.5f}"
-                    )
-                    self.image_view.setImage(
-                        self.current_image_data,
-                        autoRange=bool(autoRange),
-                        autoLevels=False,
-                        levels=(0, 1),
-                    )
-                else:
-                    # DEBUG
-                    print(
-                        f"[MAIN DEBUG] display_data -> dtype:"
-                        f" {self.current_image_data.dtype}, min:"
-                        f" {self.current_image_data.min():.5f}, max:"
-                        f" {self.current_image_data.max():.5f}, median:"
-                        f" {np.median(self.current_image_data):.5f}"
-                    )
-                    self.image_view.setImage(
-                        self.current_image_data,
-                        autoRange=bool(autoRange),
-                        autoLevels=True,                       
-                    )
-        self.image_view.getImageItem().setLevels([0.0, 1.0])
+                # Raw/Linear FITS Data view: Let pyqtgraph compute autoLevels based on 
+                # actual min/max data range so linear files don't blow out to white.
+                d_min = float(np.min(self.current_image_data))
+                d_max = float(np.max(self.current_image_data))
+                
+                # Prevent min == max collapse
+                if d_min == d_max:
+                    d_max = d_min + 1.0
+
+                self.image_view.setImage(
+                    self.current_image_data,
+                    autoRange=bool(autoRange),
+                    autoLevels=False,
+                    levels=(d_min, d_max),
+                )
     # --- STRETCH OPERATIONS ---
 
     def toggle_autostretch(self, checked: bool):
@@ -644,8 +609,12 @@ class AstroImageEditor(QMainWindow):
         self.current_image_data = result
         self.autostretched_cache = None
         self.update_display(autoRange=False)
-        if hasattr(self, "header_panel"):
-            self.header_panel.update_histogram_only(self.current_image_data)
+        # Guarded call in case update_histogram_only is deprecated/removed
+        if hasattr(self, "header_panel") and hasattr(self.header_panel, "update_histogram_only"):
+            try:
+                self.header_panel.update_histogram_only(self.current_image_data)
+            except Exception:
+                pass
         self.undo_action.setEnabled(True)
         self.undo_btn.setEnabled(True)
         self.statusBar().showMessage(status_msg, 5000)
@@ -668,31 +637,38 @@ class AstroImageEditor(QMainWindow):
         if self.current_image_data is None:
             return
 
-        # Show options dialog
         dialog = BackgroundExtractionDialog(
             image_data=self.current_image_data,
-            on_apply=self._commit_background_result,
             parent=self,
         )
-        if dialog.exec() == BackgroundExtractionDialog.DialogCode.Accepted:
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             result = dialog.get_result()
             if result is not None:
-                _, bg_model = result
-                # Pop up the extracted gradient surface preview!
+                # result is a tuple: (corrected_image, background_model)
+                corrected_img, bg_model = result
+                self._commit_processed_result(
+                    corrected_img, "Removed fitted background gradient. Press Ctrl+Z to undo."
+                )
+                
+                # Pop up the extracted gradient surface preview dialog
                 preview_dialog = GradientPreviewDialog(bg_model, parent=self)
                 preview_dialog.exec()
 
     def apply_denoise(self):
-        """Applies detail-preserving denoising with one-step Undo support."""
+        """Applies detail-preserving multiscale wavelet denoising with one-step Undo support."""
         if self.current_image_data is None:
             return
 
         dialog = DenoiseDialog(
             image_data=self.current_image_data,
-            on_apply=lambda res: self._commit_processed_result(res, "Denoised image. Press Ctrl+Z to undo."),
             parent=self,
         )
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            result = dialog.get_result()
+            if result is not None:
+                self._commit_processed_result(
+                    result, "Denoised image (Wavelet). Press Ctrl+Z to undo."
+                )
 
     def apply_sharpen(self):
         """Applies selective unsharp masking with one-step Undo support."""
@@ -701,10 +677,14 @@ class AstroImageEditor(QMainWindow):
 
         dialog = SharpenDialog(
             image_data=self.current_image_data,
-            on_apply=lambda res: self._commit_processed_result(res, "Sharpened image. Press Ctrl+Z to undo."),
             parent=self,
         )
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            result = dialog.get_result()
+            if result is not None:
+                self._commit_processed_result(
+                    result, "Sharpened image. Press Ctrl+Z to undo."
+                )
 
     def apply_star_removal(self):
         """Removes compact bright stars with one-step Undo support."""
@@ -713,10 +693,14 @@ class AstroImageEditor(QMainWindow):
 
         dialog = StarRemovalDialog(
             image_data=self.current_image_data,
-            on_apply=lambda res: self._commit_processed_result(res, "Removed stars. Press Ctrl+Z to undo."),
             parent=self,
         )
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            result = dialog.get_result()
+            if result is not None:
+                self._commit_processed_result(
+                    result, "Removed stars. Press Ctrl+Z to undo."
+                )
 
     def apply_flip_horizontal(self):
         """Flips the current image horizontally with Undo support."""

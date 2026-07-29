@@ -112,21 +112,6 @@ class BackgroundExtractionDialog(QDialog):
 
     def _on_processing_finished(self, result):
         self.result_data = result
-        self.progress_bar.setValue(85)
-        QApplication.processEvents()
-
-        if self.on_apply:
-            try:
-                self.on_apply(result)
-                QApplication.processEvents()
-            except Exception as err:
-                QApplication.restoreOverrideCursor()
-                self.progress_bar.setVisible(False)
-                self.group.setEnabled(True)
-                self.buttons.setEnabled(True)
-                QMessageBox.critical(self, "Display Error", f"Failed to update main interface:\n\n{err}")
-                return
-
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         QApplication.restoreOverrideCursor()

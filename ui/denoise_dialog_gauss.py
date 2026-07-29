@@ -18,7 +18,7 @@ from ui.processing_worker import ProcessingWorker
 
 
 class DenoiseDialog(QDialog):
-    """Collects parameters and runs the Multiscale Wavelet denoising operation."""
+    """Collects parameters for the detail-preserving denoise operation."""
 
     def __init__(self, image_data=None, on_apply: Optional[Callable] = None, parent=None):
         super().__init__(parent)
@@ -27,15 +27,14 @@ class DenoiseDialog(QDialog):
         self.result_data = None
         self.worker = None
 
-        self.setWindowTitle("Multiscale Wavelet Denoise")
+        self.setWindowTitle("Denoise Image")
         self.setMinimumWidth(360)
 
         layout = QVBoxLayout(self)
 
         description = QLabel(
-            "Applies Multiscale Starlet (À Trous) wavelet noise reduction. "
-            "Attenuates high-frequency background grain while leaving stars and "
-            "nebula structures intact."
+            "Reduces fine grain while protecting stronger stars and nebula detail. "
+            "Start with the defaults and increase strength gradually."
         )
         description.setWordWrap(True)
         description.setStyleSheet("color: #aaaaaa;")
@@ -49,11 +48,27 @@ class DenoiseDialog(QDialog):
         self.spin_strength.setRange(0.0, 1.0)
         self.spin_strength.setSingleStep(0.05)
         self.spin_strength.setDecimals(2)
-        self.spin_strength.setValue(1.00)
-        self.spin_strength.setToolTip(
-            "1.00 applies full wavelet noise suppression. Lower values blend back original fine details."
-        )
+        self.spin_strength.setValue(0.50)
+        self.spin_strength.setToolTip("Higher values remove more fine-grain noise.")
         form.addRow("Strength:", self.spin_strength)
+
+        self.spin_radius = QDoubleSpinBox()
+        self.spin_radius.setRange(0.1, 10.0)
+        self.spin_radius.setSingleStep(0.1)
+        self.spin_radius.setDecimals(1)
+        self.spin_radius.setValue(1.2)
+        self.spin_radius.setSuffix(" px")
+        self.spin_radius.setToolTip("The scale of noise to smooth, in pixels.")
+        form.addRow("Smoothing radius:", self.spin_radius)
+
+        self.spin_detail_threshold = QDoubleSpinBox()
+        self.spin_detail_threshold.setRange(0.1, 10.0)
+        self.spin_detail_threshold.setSingleStep(0.1)
+        self.spin_detail_threshold.setDecimals(1)
+        self.spin_detail_threshold.setValue(2.0)
+        self.spin_detail_threshold.setSuffix(" σ")
+        self.spin_detail_threshold.setToolTip("Higher values retain more stars and fine detail.")
+        form.addRow("Detail protection:", self.spin_detail_threshold)
 
         layout.addWidget(self.group)
 
@@ -71,9 +86,11 @@ class DenoiseDialog(QDialog):
         layout.addWidget(self.buttons)
 
     def get_params(self) -> dict:
-        """Returns setting dictionary matching the denoise_image function signature."""
+        """Returns the selected denoise settings."""
         return {
             "strength": self.spin_strength.value(),
+            "smoothing_radius": self.spin_radius.value(),
+            "detail_threshold": self.spin_detail_threshold.value(),
         }
 
     def get_result(self):
@@ -105,10 +122,25 @@ class DenoiseDialog(QDialog):
 
     def _on_processing_finished(self, result):
         self.result_data = result
+        self.progress_bar.setValue(85)
+        QApplication.processEvents()
+
+        if self.on_apply:
+            try:
+                self.on_apply(result)
+                QApplication.processEvents()
+            except Exception as err:
+                QApplication.restoreOverrideCursor()
+                self.progress_bar.setVisible(False)
+                self.group.setEnabled(True)
+                self.buttons.setEnabled(True)
+                QMessageBox.critical(self, "Display Error", f"Failed to update main interface:\n\n{err}")
+                return
+
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         QApplication.restoreOverrideCursor()
-        self.accept()  # Triggers dialog closure and returns Accepted
+        self.accept()
 
     def _on_processing_failed(self, error_msg):
         QApplication.restoreOverrideCursor()
