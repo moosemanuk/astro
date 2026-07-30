@@ -1,4 +1,6 @@
 import sys
+import ctypes
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QCheckBox, QFileDialog, QMessageBox, QDialog, QLabel, QSplitter
@@ -13,29 +15,46 @@ import pyqtgraph as pg
 import numpy as np
 import os
 
-from processing.stretch import midtone_transfer_function, arcsinh_stretch, auto_midtone_stretch
-from ui.stretch_dialog import StretchDialog
-from processing.pedestal import remove_pedestal
-from processing.geometry import flip_horizontal, flip_vertical
 from ui.background_dialog import BackgroundExtractionDialog
 from ui.gradient_preview_dialog import GradientPreviewDialog
 from ui.curves_dialog import CurvesTransformationDialog
 from ui.stretch_workbench import StretchWorkbenchDialog
+from ui.denoise_dialog import DenoiseDialog
+from ui.sharpen_dialog import SharpenDialog
+from ui.star_removal_dialog import StarRemovalDialog
+from ui.stretch_dialog import StretchDialog
+
 from processing.background import extract_background_poly
 from processing.denoise import denoise_image
-from ui.denoise_dialog import DenoiseDialog
 from processing.sharpen import sharpen_image
-from ui.sharpen_dialog import SharpenDialog
 from processing.star_removal import remove_stars
-from ui.star_removal_dialog import StarRemovalDialog
-
+from processing.stretch import midtone_transfer_function, arcsinh_stretch, auto_midtone_stretch
+from processing.pedestal import remove_pedestal
+from processing.hot_pixels import remove_hot_pixels
+from processing.geometry import flip_horizontal, flip_vertical
 
 # AutoStretch is a display-only preview. Robust normalization in the stretch
 # keeps saturated stars from hiding faint nebula structure.
 AUTO_STRETCH_TARGET_BACKGROUND = 0.20
 
-
 class AstroImageEditor(QMainWindow):
+
+    def set_dark_title_bar(self):
+        """Enables Windows 10/11 native dark title bar for PyQt6 windows."""
+        if sys.platform == "win32":
+            try:
+                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                hwnd = int(self.winId())
+                value = ctypes.c_int(1)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, 
+                    DWMWA_USE_IMMERSIVE_DARK_MODE, 
+                    ctypes.byref(value), 
+                    ctypes.sizeof(value)
+                )
+            except Exception as e:
+                print(f"Could not set dark title bar: {e}")
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Astro Image Editor")
@@ -58,6 +77,9 @@ class AstroImageEditor(QMainWindow):
         self.init_menu_bar()
         self.init_ui()
         self.load_stylesheet()
+
+        # Apply dark theme to Windows native title bar
+        self.set_dark_title_bar()
 
     def init_actions(self):
         """Initializes QAction objects so they can be added to menus or shortcuts."""
@@ -85,6 +107,10 @@ class AstroImageEditor(QMainWindow):
         self.addAction(self.undo_action)
 
         # --- Image Menu Actions ---
+        self.hot_pixel_action = QAction("Remove Hot Pixels...", self)
+        self.hot_pixel_action.setEnabled(False)
+        self.hot_pixel_action.triggered.connect(self.apply_hot_pixel_removal)
+
         self.pedestal_action = QAction("Pedestal Removal", self)
         self.pedestal_action.setEnabled(False)
         self.pedestal_action.triggered.connect(self.apply_pedestal_removal)
@@ -140,7 +166,7 @@ class AstroImageEditor(QMainWindow):
             print(f"Stylesheet file '{filepath}' not found. Using default styles.")
 
     def init_menu_bar(self):
-        """Constructs the menu bar strictly in File -> Edit -> Help order."""
+        """Constructs the menu bar in File -> Edit -> Image -> Help order."""
         menu_bar = self.menuBar()
 
         # 1. File Menu
@@ -154,24 +180,32 @@ class AstroImageEditor(QMainWindow):
         edit_menu = menu_bar.addMenu("&Edit")
         edit_menu.addAction(self.undo_action)
         
-        # 2.5 Image Editing Menu
+        # 3. Image Editing Menu (Linear to Non-Linear Workflow)
         image_menu = menu_bar.addMenu("&Image")
+        
+        # Phase 1: Pre-processing & Linear Cleanup
         image_menu.addAction(self.pedestal_action)
+        image_menu.addAction(self.hot_pixel_action)
         image_menu.addAction(self.background_removal)
-        image_menu.addAction(self.sharpen_action)
+        image_menu.addSeparator()
+
+        # Phase 2: Restorative Detail & Noise Reduction
         image_menu.addAction(self.denoise_action)
+        image_menu.addAction(self.sharpen_action)
         image_menu.addAction(self.star_removal_action)
         image_menu.addSeparator()
 
+        # Phase 3: Non-Linear Stretching & Tone Adjustment
         image_menu.addAction(self.stretch_workbench)
         image_menu.addAction(self.apply_curves)
         image_menu.addSeparator()
 
+        # Phase 4: Framing & Geometry
         image_menu.addAction(self.flip_h_action)
         image_menu.addAction(self.flip_v_action)
         image_menu.addAction(self.crop_action)
 
-        # 3. Help Menu
+        # 4. Help Menu
         help_menu = menu_bar.addMenu("&Help")
         help_menu.addAction(self.about_action)
 
@@ -308,6 +342,7 @@ class AstroImageEditor(QMainWindow):
                 self.stretch_workbench.setEnabled(True)
                 self.flip_h_action.setEnabled(True)
                 self.flip_v_action.setEnabled(True)
+                self.hot_pixel_action.setEnabled(True)
 
                 self.header_panel.update_header_info(path, display_data, header)
 
@@ -348,6 +383,7 @@ class AstroImageEditor(QMainWindow):
         self.close_image_action.setEnabled(False)
         self.flip_h_action.setEnabled(False)
         self.flip_v_action.setEnabled(False)
+        self.hot_pixel_action.setEnabled(False)
 
         self.image_view.clear()
         self.header_panel.clear()
@@ -555,6 +591,31 @@ class AstroImageEditor(QMainWindow):
         self.undo_btn.setEnabled(True)
         self.statusBar().showMessage(f"Cropped image to {x2 - x1} × {y2 - y1} px. Press Ctrl+Z to undo.", 5000)
 
+    def apply_hot_pixel_removal(self):
+        """Applies hot pixel removal directly to the active image data."""
+        if self.current_image_data is None:
+            return
+
+        # 1. Block UI cursor for immediate feedback
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage("Removing hot pixels...")
+        QApplication.processEvents()
+
+        try:
+            # 2. Run hot pixel removal directly
+            cleaned_data = remove_hot_pixels(
+                self.current_image_data, 
+                threshold=3.0, 
+                detect_chroma=True
+            )
+
+            # 3. Commit result to active image state
+            self._commit_processed_result(
+                cleaned_data, "Removed hot pixels. Press Ctrl+Z to undo."
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def apply_pedestal_removal(self):
         """Calculates and subtracts baseline pedestal offset across channels with Undo support."""
         if self.current_image_data is None:
@@ -605,16 +666,27 @@ class AstroImageEditor(QMainWindow):
     def _commit_processed_result(self, result, status_msg: str):
         if result is None:
             return
+
         self.previous_image_data = self.current_image_data.copy()
         self.current_image_data = result
+
+        # 1. Clear stretch cache so preview updates properly
         self.autostretched_cache = None
+
+        # 2. Directly update pyqtgraph ImageItem data & force a scene redraw
+        self.image_view.getImageItem().setImage(self.current_image_data)
+        self.image_view.getImageItem().update()
+
+        # 3. Refresh display view state
         self.update_display(autoRange=False)
-        # Guarded call in case update_histogram_only is deprecated/removed
+
+        # 4. Refresh histogram and UI controls
         if hasattr(self, "header_panel") and hasattr(self.header_panel, "update_histogram_only"):
             try:
                 self.header_panel.update_histogram_only(self.current_image_data)
             except Exception:
                 pass
+
         self.undo_action.setEnabled(True)
         self.undo_btn.setEnabled(True)
         self.statusBar().showMessage(status_msg, 5000)
