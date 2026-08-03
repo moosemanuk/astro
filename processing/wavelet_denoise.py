@@ -5,19 +5,21 @@ Uses B3-spline filtering to isolate spatial frequencies and threshold noise.
 
 from typing import Callable, Optional
 import numpy as np
-from scipy.ndimage import filter2d
+# from scipy.ndimage import filter2d
+from scipy.ndimage import convolve
+from scipy.ndimage import convolve1d
 
 
 def _b3_spline_kernel(step: int) -> np.ndarray:
     """Constructs a 2D 5x5 B3-spline kernel with step-size hole spacing (À Trous algorithm)."""
     # 1D B3-spline base: [1/16, 1/4, 3/8, 1/4, 1/16]
     base_1d = np.array([0.0625, 0.25, 0.375, 0.25, 0.0625], dtype=np.float32)
-    
     size = 1 + 4 * step
     kernel_1d = np.zeros(size, dtype=np.float32)
     kernel_1d[::step] = base_1d
     
-    return np.outer(kernel_1d, kernel_1d)
+    # return np.outer(kernel_1d, kernel_1d)
+    return kernel_1d
 
 
 def _denoise_channel_starlet(
@@ -38,7 +40,8 @@ def _denoise_channel_starlet(
         kernel = _b3_spline_kernel(step)
         
         # Convolve with expanding kernel (reflect boundary for astro edges)
-        next_layer = filter2d(current_layer, kernel, mode="reflect")
+        next_layer = convolve(current_layer, kernel, mode="reflect")
+        next_layer = convolve(next_layer, kernel, axis=0, mode="reflect")
         
         # Detail layer = difference between successive smoothings
         detail = current_layer - next_layer
@@ -133,4 +136,8 @@ def wavelet_denoise_image(
     if progress_callback:
         progress_callback(100)
 
+    if np.issubdtype(original_dtype, np.integer):
+        info = np.iinfo(original_dtype)
+        result = np.clip(result, info.min, info.max)
+        result = np.round(result)
     return result.astype(original_dtype, copy=False)
