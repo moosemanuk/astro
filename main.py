@@ -23,6 +23,7 @@ from ui.denoise_dialog import DenoiseDialog
 from ui.sharpen_dialog import SharpenDialog
 from ui.star_removal_dialog import StarRemovalDialog
 from ui.stretch_dialog import StretchDialog
+from ui.green_noise_dialog import GreenNoiseDialog
 
 from processing.background import extract_background_poly
 from processing.denoise import denoise_image
@@ -32,6 +33,7 @@ from processing.stretch import midtone_transfer_function, arcsinh_stretch, auto_
 from processing.pedestal import remove_pedestal
 from processing.hot_pixels import remove_hot_pixels
 from processing.geometry import flip_horizontal, flip_vertical
+from processing.green_noise import remove_green_noise
 
 # AutoStretch is a display-only preview. Robust normalization in the stretch
 # keeps saturated stars from hiding faint nebula structure.
@@ -127,6 +129,10 @@ class AstroImageEditor(QMainWindow):
         self.denoise_action.setEnabled(False)
         self.denoise_action.triggered.connect(self.apply_denoise)
 
+        self.green_noise_action = QAction("Green Noise Removal (SCNR) ...", self)
+        self.green_noise_action.setEnabled(False)
+        self.green_noise_action.triggered.connect(self.apply_green_noise_removal)
+
         self.star_removal_action = QAction("Star Removal ...", self)
         self.star_removal_action.setEnabled(False)
         self.star_removal_action.triggered.connect(self.apply_star_removal)
@@ -191,6 +197,7 @@ class AstroImageEditor(QMainWindow):
 
         # Phase 2: Restorative Detail & Noise Reduction
         image_menu.addAction(self.denoise_action)
+        image_menu.addAction(self.green_noise_action)
         image_menu.addAction(self.sharpen_action)
         image_menu.addAction(self.star_removal_action)
         image_menu.addSeparator()
@@ -334,6 +341,7 @@ class AstroImageEditor(QMainWindow):
                 self.btn_crop_tool.setEnabled(True)
                 self.background_removal.setEnabled(True)
                 self.denoise_action.setEnabled(True)
+                self.green_noise_action.setEnabled(True)
                 self.sharpen_action.setEnabled(True)
                 self.star_removal_action.setEnabled(True)
                 self.close_image_action.setEnabled(True)
@@ -374,6 +382,7 @@ class AstroImageEditor(QMainWindow):
         self.btn_crop_tool.setEnabled(False)
         self.background_removal.setEnabled(False)
         self.denoise_action.setEnabled(False)
+        self.green_noise_action.setEnabled(False)
         self.sharpen_action.setEnabled(False)
         self.star_removal_action.setEnabled(False)
         self.apply_curves.setEnabled(False)
@@ -741,6 +750,42 @@ class AstroImageEditor(QMainWindow):
                 self._commit_processed_result(
                     result, "Denoised image (Wavelet). Press Ctrl+Z to undo."
                 )
+
+    def apply_green_noise_removal(self):
+        """Applies SCNR green noise reduction with live preview and Undo support."""
+        if self.current_image_data is None:
+            return
+
+        if self.current_image_data.ndim != 3 or self.current_image_data.shape[2] != 3:
+            QMessageBox.information(
+                self, 
+                "Green Noise Removal", 
+                "Green noise reduction (SCNR) requires a 3-channel RGB image."
+            )
+            return
+
+        backup_data = self.current_image_data.copy()
+        dialog = GreenNoiseDialog(
+            image_data=backup_data,
+            parent=self,
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            result = dialog.get_result()
+            if result is not None:
+                self.previous_image_data = backup_data
+                self.current_image_data = result
+                self.autostretched_cache = None
+                self.update_display(autoRange=False)
+                if hasattr(self, "header_panel"):
+                    self.header_panel.update_histogram_only(self.current_image_data)
+                self.undo_action.setEnabled(True)
+                self.undo_btn.setEnabled(True)
+                self.statusBar().showMessage("Removed green noise (SCNR). Press Ctrl+Z to undo.", 5000)
+        else:
+            self.current_image_data = backup_data
+            self.autostretched_cache = None
+            self.update_display(autoRange=False)
 
     def apply_sharpen(self):
         """Applies selective unsharp masking with one-step Undo support."""

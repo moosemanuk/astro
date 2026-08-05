@@ -12,21 +12,36 @@ def normalise_image(data: np.ndarray) -> np.ndarray:
 
 def apply_black_point_protection(
     data: np.ndarray, 
-    protection_factor: float = 0.0
+    protection_factor: float = 0.0,
+    target_bg: float = 0.25
 ) -> np.ndarray:
-    """Applies a smooth protection curve to low values (shadows/black point).
+    """Applies a shadow protection toe to suppress values below target background.
     
-    - protection_factor = 0.0: No protection (stretches everything linearly near 0).
-    - protection_factor > 0.0: Progressively dampens low values so sky background
-      remains dark while midtones expand.
+    - protection_factor = 0.0: Linear pass-through (standard MTF stretch).
+    - protection_factor = 1.0: Aggressively suppresses shadows below target_bg toward black.
     """
     p = float(np.clip(protection_factor, 0.0, 1.0))
     if p == 0.0:
         return data
 
-    # Power exponent scaling (1.0 to 4.0) to suppress low values
-    power = 1.0 + (p * 3.0)
-    return np.power(data, power).astype(np.float32)
+    # Threshold anchor set near the background level
+    bg_thresh = float(np.clip(target_bg, 0.01, 0.5))
+    
+    # Smooth S-curve transition below target background level
+    # Formula: normalized power blend that stays identical above bg_thresh
+    mask = data < bg_thresh
+    if not np.any(mask):
+        return data
+
+    result = np.copy(data)
+    norm_shadows = result[mask] / bg_thresh
+    
+    # Scale exponent (1.0 = linear, higher = deeper shadow suppression)
+    power = 1.0 + (p * 3.0)  
+    suppressed = np.power(norm_shadows, power) * bg_thresh
+    
+    result[mask] = suppressed
+    return result.astype(np.float32)
 
 
 def auto_midtone_stretch(
@@ -34,14 +49,10 @@ def auto_midtone_stretch(
     target_background: float = 0.25,
     black_point_percentile: float = 0.1,
     white_point_percentile: float = 99.9,
-    protect_black_point: float = 1.0,
+    protect_black_point: float = 0.5,
 ) -> np.ndarray:
     """Statistical Midtone Transfer Function (MTF) with optional shadow protection."""
     source = normalise_image(data)
-    
-    # Protect shadow region if enabled
-    if protect_black_point > 0.0:
-        source = apply_black_point_protection(source, protect_black_point)
 
     finite_values = source[np.isfinite(source)]
     if finite_values.size == 0:
@@ -57,7 +68,6 @@ def auto_midtone_stretch(
     if not np.isfinite(black_point) or not np.isfinite(white_point) or white_point <= black_point:
         return source
 
-    # Clip to percentile black/white bounds
     img = np.clip((source - black_point) / (white_point - black_point), 0.0, 1.0)
 
     bg_median = float(np.median(img))
@@ -73,7 +83,17 @@ def auto_midtone_stretch(
     den = (2.0 * midtone - 1.0) * img - midtone
     den = np.where(den == 0.0, 1e-7, den)
 
-    return np.clip(num / den, 0.0, 1.0).astype(np.float32)
+    stretched = np.clip(num / den, 0.0, 1.0).astype(np.float32)
+
+    # Apply shadow protection AFTER MTF target calculation
+    if protect_black_point > 0.0:
+        stretched = apply_black_point_protection(
+            stretched, 
+            protection_factor=protect_black_point,
+            target_bg=target
+        )
+
+    return stretched
 
 
 def midtone_transfer_function(
