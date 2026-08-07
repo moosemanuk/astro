@@ -13,8 +13,31 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from processing.denoise import denoise_image
+from processing.wavelet_denoise import WaveletDenoising
 from ui.processing_worker import ProcessingWorker
+
+
+#def run_wavelet_denoise(image_data, params: dict, progress_callback=None):
+
+def run_wavelet_denoise(image_data, strength: float = 1.0, progress_callback=None):
+    """Worker function to execute WaveletDenoising off the UI thread."""
+    wd = WaveletDenoising(
+        normalize=False,
+        wavelet='db3',
+        level=2,
+        thr_mode='soft',
+        selected_level=2,
+        method="universal",
+        energy_perc=0.90
+    )
+    # Perform fit on input image/array
+    denoised = wd.fit(image_data)
+    
+    # If strength < 1.0, blend back with the original image data
+    if strength < 1.0:
+        denoised = (image_data * (1.0 - strength)) + (denoised * strength)
+
+    return denoised
 
 
 class DenoiseDialog(QDialog):
@@ -71,7 +94,7 @@ class DenoiseDialog(QDialog):
         layout.addWidget(self.buttons)
 
     def get_params(self) -> dict:
-        """Returns setting dictionary matching the denoise_image function signature."""
+        """Returns setting dictionary matching the denoise function signature."""
         return {
             "strength": self.spin_strength.value(),
         }
@@ -92,8 +115,9 @@ class DenoiseDialog(QDialog):
 
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
+        # Offload execution to ProcessingWorker thread
         self.worker = ProcessingWorker(
-            target_func=denoise_image,
+            target_func=run_wavelet_denoise,
             image_data=self.image_data,
             params=self.get_params(),
             parent=self,
@@ -108,7 +132,7 @@ class DenoiseDialog(QDialog):
         self.progress_bar.setValue(100)
         QApplication.processEvents()
         QApplication.restoreOverrideCursor()
-        self.accept()  # Triggers dialog closure and returns Accepted
+        self.accept()
 
     def _on_processing_failed(self, error_msg):
         QApplication.restoreOverrideCursor()

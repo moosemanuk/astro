@@ -162,7 +162,8 @@ class AstroImageEditor(QMainWindow):
         # --- Help Menu Actions ---
         self.about_action = QAction("&About", self)
         self.about_action.triggered.connect(self.show_about)
-
+        self.about_action.setShortcut("F1")
+        
     def load_stylesheet(self, filename="style.qss"):
         filepath = os.path.join("ui", filename)
         try:
