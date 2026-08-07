@@ -13,27 +13,16 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from processing.wavelet_denoise import WaveletDenoising
+from processing.denoise import denoise_image
 from ui.processing_worker import ProcessingWorker
 
 
-#def run_wavelet_denoise(image_data, params: dict, progress_callback=None):
-
 def run_wavelet_denoise(image_data, strength: float = 1.0, progress_callback=None):
-    """Worker function to execute WaveletDenoising off the UI thread."""
-    wd = WaveletDenoising(
-        normalize=False,
-        wavelet='db3',
-        level=2,
-        thr_mode='soft',
-        selected_level=2,
-        method="universal",
-        energy_perc=0.90
-    )
-    # Perform fit on input image/array
-    denoised = wd.fit(image_data)
+    """Worker function to execute Starlet Wavelet Denoising off the UI thread."""
+    # 1. Run Starlet wavelet denoising algorithm
+    denoised = denoise_image(image_data, num_scales=4, threshold=3.0)
     
-    # If strength < 1.0, blend back with the original image data
+    # 2. Blend back original image if strength < 1.0
     if strength < 1.0:
         denoised = (image_data * (1.0 - strength)) + (denoised * strength)
 

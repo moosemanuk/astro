@@ -1,150 +1,125 @@
-"""Multiscale Starlet (À Trous) Wavelet Denoiser for linear FITS image arrays."""
-
-from typing import Callable, Optional
 import numpy as np
-from scipy.signal import fftconvolve
+
+def _b3_spline_kernel():
+    """Returns a 1D 5-tap B3-spline filter kernel for a trous wavelet decomposition."""
+    return np.array([1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0], dtype=np.float32)
 
 
-def _b3_spline_kernel_2d(step: int) -> np.ndarray:
-    """Construct a 2D 5x5 B3-spline kernel with step-size hole spacing (À Trous algorithm)."""
-    base_1d = np.array([0.0625, 0.25, 0.375, 0.25, 0.0625], dtype=np.float32)
-    
-    size = 1 + 4 * step
-    kernel_1d = np.zeros(size, dtype=np.float32)
-    kernel_1d[::step] = base_1d
-    
-    return np.outer(kernel_1d, kernel_1d)
-
-
-def _denoise_channel_starlet(
-    channel: np.ndarray,
-    strength: float = 1.0,
-    scales: int = 4,
-    thresholds: tuple = (3.0, 2.0, 1.0, 0.5),
-) -> np.ndarray:
-    """Denoise a 2D float32 channel using multiscale Starlet wavelet soft-thresholding."""
-    source = channel.astype(np.float32, copy=False)
-    current_layer = source.copy()
-    
-    wavelet_layers = []
-
-    # --- PHASE 1: Wavelet Decomposition (À Trous Algorithm) ---
-    for scale in range(scales):
-        step = 2**scale
-        kernel = _b3_spline_kernel_2d(step)
-        
-        # Convolve to obtain next smoothed scale
-        next_layer = fftconvolve(current_layer, kernel, mode="same").astype(np.float32)
-        
-        # Isolate detail layer at current scale
-        detail = current_layer - next_layer
-        wavelet_layers.append(detail)
-        
-        current_layer = next_layer
-
-    # 'current_layer' contains the coarse low-frequency residual background
-    residual = current_layer
-
-    # --- PHASE 2: Multiscale Thresholding ---
-    denoised_layers = []
-    
-    for idx, detail in enumerate(wavelet_layers):
-        thresh_multiplier = thresholds[idx] if idx < len(thresholds) else 0.5
-        
-        # Estimate noise std deviation (sigma) per scale using Median Absolute Deviation (MAD)
-        med = float(np.median(detail))
-        mad = float(np.median(np.abs(detail - med)))
-        sigma = mad / 0.6745
-        
-        threshold = thresh_multiplier * sigma
-        
-        if threshold > np.finfo(np.float32).eps:
-            # Soft-thresholding: smooth attenuation around boundary
-            abs_detail = np.abs(detail)
-            thresholded = np.sign(detail) * np.maximum(0.0, abs_detail - threshold)
-            
-            # Scale thresholding effect by user strength parameter
-            if strength < 1.0:
-                thresholded = (detail * (1.0 - strength)) + (thresholded * strength)
-                
-            denoised_layers.append(thresholded)
-        else:
-            denoised_layers.append(detail)
-
-    # --- PHASE 3: Reconstruction ---
-    reconstructed = np.sum(denoised_layers, axis=0) + residual
-    
-    # Clip back to valid dynamic range of source channel
-    c_min = float(np.min(source))
-    c_max = float(np.max(source))
-    return np.clip(reconstructed, c_min, c_max)
-
-
-def denoise_image(
-    image: np.ndarray,
-    strength: float = 1.0,
-    progress_callback: Optional[Callable[[int], None]] = None,
-) -> np.ndarray:
-    """Denoise an image using Multiscale Starlet Wavelet thresholding.
-
-    Parameters
-    ----------
-    image:
-        A 2-D monochrome array or a 3-D image with channels on the first or final axis.
-    strength:
-        Noise-reduction blend amount in the range 0.0 (original) to 1.0 (full denoise).
-    progress_callback:
-        Optional callable accepting integer percentage (0 to 100).
+def _convolve_2d_separable(image, kernel_1d, step=1):
     """
-    if image.ndim not in (2, 3):
-        raise ValueError("Denoising supports only 2-D or 3-D image arrays.")
+    Separable 2D convolution with step expansion (à trous) for 2D arrays.
+    Uses mirror boundary padding to prevent edge artifacts.
+    """
+    # Expanded kernel with zeroes inserted (step - 1)
+    k_len = len(kernel_1d)
+    radius = (k_len // 2) * step
 
-    if progress_callback:
-        progress_callback(5)
+    # Pad image symmetrically
+    padded = np.pad(image, radius, mode='reflect')
 
-    strength = float(np.clip(strength, 0.0, 1.0))
-    if strength == 0.0:
-        if progress_callback:
-            progress_callback(100)
-        return image.copy()
+    # Row convolution
+    row_conv = np.zeros_like(image, dtype=np.float32)
+    for idx, w in enumerate(kernel_1d):
+        offset = idx * step
+        row_conv += w * padded[radius : radius + image.shape[0], offset : offset + image.shape[1]]
 
-    original_dtype = image.dtype
+    # Column convolution
+    padded_row = np.pad(row_conv, radius, mode='reflect')
+    out = np.zeros_like(image, dtype=np.float32)
+    for idx, w in enumerate(kernel_1d):
+        offset = idx * step
+        out += w * padded_row[offset : offset + image.shape[0], radius : radius + image.shape[1]]
 
-    # Handle 2D Monochrome
-    if image.ndim == 2:
-        result = _denoise_channel_starlet(image, strength=strength)
-        if progress_callback:
-            progress_callback(80)
+    return out
 
-    # Handle 3D [H, W, C]
-    elif image.shape[2] <= 4:
-        num_ch = image.shape[2]
-        channels = []
-        for index in range(num_ch):
-            res_c = _denoise_channel_starlet(image[:, :, index], strength=strength)
-            channels.append(res_c)
-            if progress_callback:
-                progress_callback(int(10 + 70 * (index + 1) / num_ch))
-        result = np.stack(channels, axis=2)
 
-    # Handle 3D [C, H, W]
-    elif image.shape[0] <= 4:
-        num_ch = image.shape[0]
-        channels = []
-        for index in range(num_ch):
-            res_c = _denoise_channel_starlet(image[index, :, :], strength=strength)
-            channels.append(res_c)
-            if progress_callback:
-                progress_callback(int(10 + 70 * (index + 1) / num_ch))
-        result = np.stack(channels, axis=0)
+def starlet_wavelet_denoise_channel(channel, num_scales=4, threshold_sigma=3.0, noise_floor=None):
+    """
+    Applies Starlet (À Trous) Wavelet Denoising to a single 2D float image array.
+    
+    Parameters:
+    -----------
+    channel : np.ndarray (2D float32)
+        Single-channel 2D image data.
+    num_scales : int
+        Number of wavelet scales to decompose (3 to 5 is typical).
+    threshold_sigma : float
+        Multiplicative threshold factor (e.g., 3.0 means noise above 3*sigma is kept).
+    noise_floor : float or None
+        Estimated noise standard deviation. If None, estimated via Median Absolute
+        Deviation (MAD) on the first high-frequency wavelet scale.
+    """
+    kernel = _b3_spline_kernel()
+    current_approx = channel.copy().astype(np.float32)
+    wavelet_details = []
+
+    # 1. Forward Starlet Transform (À Trous Decomposition)
+    for j in range(num_scales):
+        step = 2**j
+        next_approx = _convolve_2d_separable(current_approx, kernel, step=step)
+        detail = current_approx - next_approx
+        wavelet_details.append(detail)
+        current_approx = next_approx
+
+    # 2. Noise estimation if not provided (using MAD on 1st detail scale)
+    if noise_floor is None:
+        # MAD = median(|w1 - median(w1)|) / 0.6745
+        mad = np.median(np.abs(wavelet_details[0] - np.median(wavelet_details[0])))
+        noise_floor = mad / 0.6745
+
+    # 3. Scale-dependent Soft Thresholding
+    # Noise standard deviation scales down exponentially at coarser scales
+    scale_factors = [1.0, 0.5, 0.25, 0.125, 0.0625]
+
+    reconstructed = current_approx.copy()  # Start with the low-pass residual
+    for j, detail in enumerate(wavelet_details):
+        scale_sigma = scale_factors[min(j, len(scale_factors) - 1)]
+        thresh = threshold_sigma * noise_floor * scale_sigma
+
+        # Soft Thresholding: sign(x) * max(0, |x| - T)
+        abs_detail = np.abs(detail)
+        thresholded_detail = np.sign(detail) * np.maximum(0.0, abs_detail - thresh)
+        reconstructed += thresholded_detail
+
+    return reconstructed
+
+
+def denoise_image(image_data, num_scales=4, threshold=3.0):
+    """
+    Main entry point compatible with main.py processing pipeline.
+    Handles both 2D monochrome and 3D multi-channel (RGB) astronomical images.
+
+    Parameters:
+    -----------
+    image_data : np.ndarray
+        Astronomical image array matching your pyqtgraph/PyQt6 display shape.
+    num_scales : int
+        Wavelet scales (3 to 5).
+    threshold : float
+        Sigma cutoff for detail thresholding.
+
+    Returns:
+    --------
+    np.ndarray
+        Denoised image matching input shape and float32 dtype.
+    """
+    if image_data is None:
+        return None
+
+    data_32 = image_data.astype(np.float32)
+
+    # Handle 2D Mono vs 3D RGB Arrays
+    if data_32.ndim == 2:
+        return starlet_wavelet_denoise_channel(
+            data_32, num_scales=num_scales, threshold_sigma=threshold
+        )
+    elif data_32.ndim == 3:
+        denoised = np.zeros_like(data_32)
+        # Process each color channel independently
+        for c in range(data_32.shape[2]):
+            denoised[:, :, c] = starlet_wavelet_denoise_channel(
+                data_32[:, :, c], num_scales=num_scales, threshold_sigma=threshold
+            )
+        return denoised
     else:
-        raise ValueError("3-D images must have a channel axis containing four or fewer channels.")
-
-    if np.issubdtype(original_dtype, np.integer):
-        limits = np.iinfo(original_dtype)
-        result = np.clip(result, limits.min, limits.max)
-
-    if progress_callback:
-        progress_callback(100)
-
-    return result.astype(original_dtype, copy=False)
+        raise ValueError(f"Unsupported image dimensions: {data_32.ndim}")
