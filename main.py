@@ -813,7 +813,7 @@ class AstroImageEditor(QMainWindow):
             image_data=self.current_image_data,
             parent=self,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if dialog.exec() == StarRemovalDialog.DialogCode.Accepted:
             result = dialog.get_result()
             if result is not None:
                 self._commit_processed_result(
